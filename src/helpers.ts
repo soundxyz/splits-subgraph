@@ -227,16 +227,15 @@ export function saveSplitRecipientRemovedEvent(
 export function getAccountIdForSplitEvents(splitId: string): string {
   // If the split is downstream of a liquid split, save the distribution event
   // on the liquid split
-  let split = getSplit(splitId)
+  const split = getSplit(splitId)
   if (!split) return splitId
 
-  if (split.controller !== ZERO_ADDRESS) {
-    let liquidSplit = LiquidSplit.load(split.controller)
+  if (!split.controller.equals(Address.fromString(ZERO_ADDRESS))) {
+    const liquidSplit = LiquidSplit.load(split.controller.toHexString())
     if (liquidSplit) {
-      return split.controller
+      return split.controller.toHexString()
     }
   }
-
   return splitId
 }
 
@@ -375,7 +374,6 @@ export function distributeSplit(
       distributeDistributionEvent.account = distributorAddressString
       distributeDistributionEvent.token = tokenId
       distributeDistributionEvent.amount = distributorAmount
-      distributeDistributionEvent.split = splitId
       distributeDistributionEvent.distributionEvent = distributionEventId
       distributeDistributionEvent.save()
     }
@@ -463,7 +461,6 @@ export function distributeSplit(
     receiveDistributionEvent.account = recipient.account
     receiveDistributionEvent.token = tokenId
     receiveDistributionEvent.amount = recipientAmount
-    receiveDistributionEvent.split = splitId
     receiveDistributionEvent.distributionEvent = distributionEventId
     receiveEvents.push(receiveDistributionEvent)
   }
@@ -772,7 +769,6 @@ export function createUserIfMissing(
   // Create the user if it doesn't exist and isn't another module
   user = new User(accountId)
   user.createdBlock = blockNumber
-  user.createdTimestamp = timestamp
   user.save()
 }
 
