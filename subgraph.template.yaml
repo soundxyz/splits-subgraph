@@ -267,26 +267,6 @@ dataSources:
           handler: handleCreateSwapper
       file: ./src/swapper.mapping.ts
   - kind: ethereum/contract
-    name: PassThroughWalletFactory
-    network: {{network}}
-    source: 
-      address: {{{passThroughWalletFactoryAddress}}}
-      abi: PassThroughWalletFactory
-      startBlock: {{passThroughWalletStartBlock}}
-    mapping:
-      kind: ethereum/events
-      apiVersion: 0.0.7
-      language: wasm/assemblyscript
-      entities:
-        - PassThroughWallet
-      abis:
-        - name: PassThroughWalletFactory
-          file: ./abis/PassThroughWalletFactory.json
-      eventHandlers:
-        - event: CreatePassThroughWallet(indexed address,(address,bool,address))
-          handler: handleCreatePassThroughWallet
-      file: ./src/pass-through-wallet.mapping.ts
-  - kind: ethereum/contract
     name: DiversifierFactory
     network: {{network}}
     source:
@@ -457,30 +437,4 @@ templates:
         - event: Flash(indexed address,indexed address,((address,address),uint128,bytes)[],address,uint256[],uint256)
           handler: handleFlash
       file: ./src/swapper.mapping.ts
-  - kind: ethereum/contract
-    name: PassThroughWallet
-    network: {{network}}
-    source: 
-      abi: PassThroughWallet
-    mapping:
-      kind: ethereum/events
-      apiVersion: 0.0.7
-      language: wasm/assemblyscript
-      entities:
-        - PassThroughWallet
-        - TokenRelease
-      abis:
-        - name: PassThroughWallet
-          file: ./abis/PassThroughWallet.json
-      eventHandlers:
-        - event: SetPassThrough(address)
-          handler: handleSetPassThrough
-        - event: SetPaused(bool)
-          handler: handleSetPaused
-        - event: OwnershipTransferred(indexed address,indexed address)
-          handler: handleOwnershipTransferred
-        - event: ExecCalls((address,uint256,bytes)[])
-          handler: handleExecCalls
-        - event: PassThrough(indexed address,address[],uint256[])
-          handler: handlePassThrough
-      file: ./src/pass-through-wallet.mapping.ts
+
