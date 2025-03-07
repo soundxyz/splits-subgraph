@@ -26,6 +26,8 @@ import {
   SetSplitEvent,
   WithdrawalEvent,
   TokenWithdrawalEvent,
+  RecipientAddedEvent,
+  RecipientRemovedEvent,
 } from '../generated/schema'
 import {
   createJointId,
@@ -44,6 +46,8 @@ import {
   TOKEN_PREFIX,
   ZERO_ADDRESS,
   ZERO,
+  ADDED_PREFIX,
+  REMOVED_PREFIX,
 } from './helpers'
 
 export function handleCancelControlTransfer(
@@ -181,7 +185,13 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
     recipient.save()
     recipientIds.push(recipientId)
 
-    saveSplitRecipientAddedEvent(timestamp, txHash, logIdx, accountId, percentAllocations[i])
+    saveSplitRecipientAddedEvent(
+      timestamp,
+      txHash,
+      logIdx,
+      accountId,
+      percentAllocations[i],
+    )
   }
   split.recipients = recipientIds
 
@@ -222,10 +232,11 @@ export function handleDistributeERC20Call(call: DistributeERC20Call): void {
   let txHash = call.transaction.hash.toHexString()
   let splitId = call.inputs.split.toHexString()
   let tokenId = call.inputs.token.toHexString()
-  let distributorAddress =
-    call.inputs.distributorAddress != Address.zero()
-      ? call.inputs.distributorAddress
-      : call.from
+  let distributorAddress = !call.inputs.distributorAddress.equals(
+    Address.zero(),
+  )
+    ? call.inputs.distributorAddress
+    : call.from
 
   let distributionEvent = _getDistributionEvent(
     txHash,
@@ -253,10 +264,11 @@ export function handleDistributeETHCall(call: DistributeETHCall): void {
   let txHash = call.transaction.hash.toHexString()
   let splitId = call.inputs.split.toHexString()
   let tokenId = Address.zero().toHexString()
-  let distributorAddress =
-    call.inputs.distributorAddress != Address.zero()
-      ? call.inputs.distributorAddress
-      : call.from
+  let distributorAddress = !call.inputs.distributorAddress.equals(
+    Address.zero(),
+  )
+    ? call.inputs.distributorAddress
+    : call.from
 
   let distributionEvent = _getDistributionEvent(
     txHash,
@@ -282,19 +294,19 @@ function _getDistributionEvent(
   splitId: string,
   tokenId: string,
 ): DistributionEvent | null {
-  let accountId = getAccountIdForSplitEvents(splitId)
+  const accountId = getAccountIdForSplitEvents(splitId)
   // must exist (event handlers fire before call handlers)
-  let tx = Transaction.load(txHash) as Transaction
+  const tx = Transaction.load(txHash) as Transaction
   // must exist (event handlers fire before call handlers)
-  let distEvents = tx.distributionEvents as Array<string>
-  let distEvent: DistributionEvent
+  const distEvents = tx.distributionEvents as Array<string>
+
   for (let i = 0; i < distEvents.length; i++) {
-    let distEvent = DistributionEvent.load(distEvents[i]) as DistributionEvent
+    const distEvent = DistributionEvent.load(distEvents[i]) as DistributionEvent
     // take the earliest event that exists matching the split & token
     // note: if we want to support txns that distribute the same token for the
     // same split twice, will need to add some kind of 'processed' boolean to
     // event
-    if (distEvent.account == accountId && distEvent.token == tokenId) {
+    if (distEvent.account === accountId && distEvent.token === tokenId) {
       return distEvent
     }
   }
@@ -306,17 +318,17 @@ function _getSetSplitEvent(
   splitId: string,
 ): SetSplitEvent | null {
   // must exist (event handlers fire before call handlers)
-  let tx = Transaction.load(txHash) as Transaction
+  const tx = Transaction.load(txHash) as Transaction
   // must exist (event handlers fire before call handlers)
-  let setSplitEvents = tx.setSplitEvents as Array<string>
+  const setSplitEvents = tx.setSplitEvents as Array<string>
 
   for (let i = 0; i < setSplitEvents.length; i++) {
-    let setEvent = SetSplitEvent.load(setSplitEvents[i]) as SetSplitEvent
+    const setEvent = SetSplitEvent.load(setSplitEvents[i]) as SetSplitEvent
     // take the earliest event that exists matching the split
     // note: if we want to support txns that set the same split twice,
     // will need to add some kind of 'processed' boolean to
     // event
-    if (setEvent.account == splitId) {
+    if (setEvent.account === splitId) {
       return setEvent
     }
   }
@@ -327,14 +339,14 @@ function _getWithdrawEvent(
   txHash: string,
   accountId: string,
 ): WithdrawalEvent | null {
-  let tx = Transaction.load(txHash) as Transaction
-  let withdrawEvents = tx.withdrawEvents as Array<string>
+  const tx = Transaction.load(txHash) as Transaction
+  const withdrawEvents = tx.withdrawEvents as Array<string>
 
   for (let i = 0; i < withdrawEvents.length; i++) {
-    let withdrawEvent = WithdrawalEvent.load(
+    const withdrawEvent = WithdrawalEvent.load(
       withdrawEvents[i],
     ) as WithdrawalEvent
-    if (withdrawEvent.account == accountId) {
+    if (withdrawEvent.account === accountId) {
       return withdrawEvent
     }
   }
@@ -387,7 +399,7 @@ export function handleUpdateSplitCall(call: UpdateSplitCall): void {
   let txHash = call.transaction.hash.toHexString()
   let timestamp = call.block.timestamp
   let splitId = call.inputs.split.toHexString()
-  let accounts = call.inputs.accounts.map<string>(acc => acc.toHexString())
+  let accounts = call.inputs.accounts.map<string>((acc) => acc.toHexString())
   let percentAllocations = call.inputs.percentAllocations
   let distributorFee = call.inputs.distributorFee
   _updateSplit(
@@ -409,13 +421,14 @@ export function handleUpdateAndDistributeETHCall(
   let txHash = call.transaction.hash.toHexString()
   let splitId = call.inputs.split.toHexString()
   let tokenId = Address.zero().toHexString()
-  let accounts = call.inputs.accounts.map<string>(acc => acc.toHexString())
+  let accounts = call.inputs.accounts.map<string>((acc) => acc.toHexString())
   let percentAllocations = call.inputs.percentAllocations
   let distributorFee = call.inputs.distributorFee
-  let distributorAddress =
-    call.inputs.distributorAddress != Address.zero()
-      ? call.inputs.distributorAddress
-      : call.from
+  let distributorAddress = !call.inputs.distributorAddress.equals(
+    Address.zero(),
+  )
+    ? call.inputs.distributorAddress
+    : call.from
 
   _updateSplit(
     txHash,
@@ -454,13 +467,14 @@ export function handleUpdateAndDistributeERC20Call(
   let txHash = call.transaction.hash.toHexString()
   let splitId = call.inputs.split.toHexString()
   let tokenId = call.inputs.token.toHexString()
-  let accounts = call.inputs.accounts.map<string>(acc => acc.toHexString())
+  let accounts = call.inputs.accounts.map<string>((acc) => acc.toHexString())
   let percentAllocations = call.inputs.percentAllocations
   let distributorFee = call.inputs.distributorFee
-  let distributorAddress =
-    call.inputs.distributorAddress != Address.zero()
-      ? call.inputs.distributorAddress
-      : call.from
+  let distributorAddress = !call.inputs.distributorAddress.equals(
+    Address.zero(),
+  )
+    ? call.inputs.distributorAddress
+    : call.from
 
   _updateSplit(
     txHash,
@@ -530,7 +544,7 @@ export function handleWithdrawCall(call: WithdrawCall): void {
 
   let withdrawEvent = _getWithdrawEvent(txHash, accountId) as WithdrawalEvent
 
-  if (withdrawEth != ZERO) {
+  if (withdrawEth.notEqual(ZERO)) {
     let tokenWithdrawalEventId = createJointId([
       TOKEN_PREFIX,
       withdrawEvent.id,
@@ -580,58 +594,119 @@ function _updateSplit(
   distributorFee: BigInt,
 ): void {
   // use new object for partial updates when existing values not needed
-  let split = getSplit(splitId)
+  const split = getSplit(splitId)
   if (!split) return
 
   split.latestBlock = blockNumber
   split.latestActivity = timestamp
   split.distributorFee = distributorFee
-  let oldRecipientIds = split.recipients
-  let newRecipientIds = new Array<string>()
 
-  let setSplitEvent = _getSetSplitEvent(txHash, splitId) as SetSplitEvent
-  let logIdx = setSplitEvent.logIndex
+  // Collect old recipients for comparison
+  const oldRecipientIds = split.recipients
+  const newRecipientIds = new Array<string>()
 
-  let eventsAccountId = getAccountIdForSplitEvents(splitId)
-  let shouldSaveRecipientEvents = eventsAccountId == splitId
+  // Get event information
+  const setSplitEvent = _getSetSplitEvent(txHash, splitId) as SetSplitEvent
+  const logIdx = setSplitEvent.logIndex
 
-  let newRecipientIdSet = new Set<string>()
+  const eventsAccountId = getAccountIdForSplitEvents(splitId)
+  const shouldSaveRecipientEvents = eventsAccountId === splitId
+
+  // Prepare batches for entity storage
+  const newRecipientIdSet = new Set<string>()
+  const recipientsToSave: Recipient[] = []
+  const recipientsToRemove: string[] = []
+  const recipientEventsToSave: (RecipientAddedEvent | RecipientRemovedEvent)[] =
+    []
+
+  // Preload existing recipients that might be removed
+  const existingRecipients = new Map<string, Recipient>()
+  for (let i = 0; i < oldRecipientIds.length; i++) {
+    const recipientId = oldRecipientIds[i]
+    const recipient = Recipient.load(recipientId)
+    if (recipient) {
+      existingRecipients.set(recipientId, recipient as Recipient)
+    }
+  }
+
+  // Process all new recipients in batch
   for (let i: i32 = 0; i < accounts.length; i++) {
-    let accountId = accounts[i]
+    const accountId = accounts[i]
     // only create a User if accountId doesn't point to a Split
     createUserIfMissing(accountId, blockNumber, timestamp)
 
-    let recipientId = createJointId([splitId, accountId])
+    const recipientId = createJointId([splitId, accountId])
     newRecipientIdSet.add(recipientId)
-    let recipient = new Recipient(recipientId)
+    newRecipientIds.push(recipientId)
+
+    // Create the recipient entity
+    const recipient = new Recipient(recipientId)
     recipient.account = accountId
     recipient.split = splitId
     recipient.ownership = percentAllocations[i]
-    recipient.save()
-    newRecipientIds.push(recipientId)
+    recipientsToSave.push(recipient)
 
+    // Create recipient events if needed
     if (shouldSaveRecipientEvents && !oldRecipientIds.includes(recipientId)) {
-      saveSplitRecipientAddedEvent(timestamp, txHash, logIdx, accountId, percentAllocations[i])
+      const recipientAddedEventId = createJointId([
+        ADDED_PREFIX,
+        setSplitEvent.id,
+        accountId,
+      ])
+      const recipientAddedEvent = new RecipientAddedEvent(recipientAddedEventId)
+      recipientAddedEvent.timestamp = timestamp
+      recipientAddedEvent.account = accountId
+      recipientAddedEvent.logIndex = logIdx
+      recipientAddedEvent.ownership = percentAllocations[i]
+      recipientAddedEvent.setSplitEvent = setSplitEvent.id
+      recipientEventsToSave.push(recipientAddedEvent)
     }
   }
 
-  // delete existing recipients not in updated split
+  // Find recipients to remove
   for (let i: i32 = 0; i < oldRecipientIds.length; i++) {
-    let recipientId = oldRecipientIds[i]
+    const recipientId = oldRecipientIds[i]
     // remove recipients no longer in split
     if (!newRecipientIdSet.has(recipientId)) {
-      let removedRecipient = Recipient.load(recipientId)
-      if (shouldSaveRecipientEvents && removedRecipient)
-        saveSplitRecipientRemovedEvent(
-          timestamp,
-          txHash,
-          logIdx,
-          removedRecipient.account,
-        )
-      store.remove('Recipient', recipientId)
+      recipientsToRemove.push(recipientId)
+
+      if (shouldSaveRecipientEvents) {
+        const removedRecipient = existingRecipients.get(recipientId)
+        if (removedRecipient) {
+          const recipientRemovedEventId = createJointId([
+            REMOVED_PREFIX,
+            setSplitEvent.id,
+            removedRecipient.account,
+          ])
+          const recipientRemovedEvent = new RecipientRemovedEvent(
+            recipientRemovedEventId,
+          )
+          recipientRemovedEvent.timestamp = timestamp
+          recipientRemovedEvent.account = removedRecipient.account
+          recipientRemovedEvent.logIndex = logIdx
+          recipientRemovedEvent.setSplitEvent = setSplitEvent.id
+          recipientEventsToSave.push(recipientRemovedEvent)
+        }
+      }
     }
   }
 
+  // Apply all changes in batch
   split.recipients = newRecipientIds
   split.save()
+
+  // Save all recipients
+  for (let i = 0; i < recipientsToSave.length; i++) {
+    recipientsToSave[i].save()
+  }
+
+  // Remove all recipients no longer in the split
+  for (let i = 0; i < recipientsToRemove.length; i++) {
+    store.remove('Recipient', recipientsToRemove[i])
+  }
+
+  // Save all recipient events
+  for (let i = 0; i < recipientEventsToSave.length; i++) {
+    recipientEventsToSave[i].save()
+  }
 }

@@ -92,7 +92,8 @@ function addInternalBalance(
     accountTokenInternalBalance.token = tokenId
     accountTokenInternalBalance.amount = ZERO
   }
-  accountTokenInternalBalance.amount += amount
+  accountTokenInternalBalance.amount =
+    accountTokenInternalBalance.amount.plus(amount)
   accountTokenInternalBalance.save()
 
   // TODO: Not including distributor incentives for now. Need to decide if they'll be lumped into
@@ -116,7 +117,8 @@ function addInternalBalance(
     contractEarningsInternalBalance.token = tokenId
     contractEarningsInternalBalance.amount = ZERO
   }
-  contractEarningsInternalBalance.amount += amount
+  contractEarningsInternalBalance.amount =
+    contractEarningsInternalBalance.amount.plus(amount)
   contractEarningsInternalBalance.save()
 }
 
@@ -228,10 +230,10 @@ export function getAccountIdForSplitEvents(splitId: string): string {
   let split = getSplit(splitId)
   if (!split) return splitId
 
-  if (split.controller.toHexString() != ZERO_ADDRESS) {
-    let liquidSplit = LiquidSplit.load(split.controller.toHexString())
+  if (split.controller !== ZERO_ADDRESS) {
+    let liquidSplit = LiquidSplit.load(split.controller)
     if (liquidSplit) {
-      return split.controller.toHexString()
+      return split.controller
     }
   }
 
@@ -285,111 +287,198 @@ export function distributeSplit(
   distributorAddress: Address,
   blockNumber: i32,
 ): void {
-  let split = getSplit(splitId)
+  const split = getSplit(splitId)
   if (!split) return
 
-  let token = new Token(tokenId)
+  const token = new Token(tokenId)
   token.save()
 
-  let distributionEventId = createJointId([
+  const distributionEventId = createJointId([
     DISTRIBUTION_EVENT_PREFIX,
     txHash,
     logIdx.toString(),
   ])
 
-  updateWithdrawalAmount(splitId, splitId, tokenId, amount)
   updateDistributionAmount(splitId, tokenId, amount)
 
-  let splitTokenBalanceId = createJointId([splitId, tokenId])
-  let splitTokenInternalBalanceId = createJointId([
+  const splitTokenBalanceId = createJointId([splitId, tokenId])
+  const splitTokenInternalBalanceId = createJointId([
     TOKEN_INTERNAL_BALANCE_PREFIX,
     splitTokenBalanceId,
   ])
-  let splitTokenInternalBalance = TokenInternalBalance.load(
+  const splitTokenInternalBalance = TokenInternalBalance.load(
     splitTokenInternalBalanceId,
   )
   if (splitTokenInternalBalance) {
-    splitTokenInternalBalance.amount = ONE
+    splitTokenInternalBalance.amount = ZERO
     splitTokenInternalBalance.save()
   }
 
-  if (blockNumber > split.latestBlock) {
+  // Only update split if necessary
+  const needsSplitUpdate = blockNumber > split.latestBlock
+  if (needsSplitUpdate) {
     split.latestBlock = blockNumber
     split.latestActivity = timestamp
     split.save()
   }
 
-  // doesn't know msg.sender; only affects advance users distributing from contracts
-  // assuming they don't explicitly use distributorFee to repoint the proceeds elsewhere;
-  // likely very rare & can fix accounting on withdrawal anyway)
-  let distributorFee = split.distributorFee
-  if (distributorFee != ZERO) {
-    let distributorAmount = (amount * distributorFee) / PERCENTAGE_SCALE
-    amount -= distributorAmount
+  // Prepare batches for entity storage
+  const receiveEvents: ReceiveDistributionEvent[] = []
+  const internalBalancesToSave: TokenInternalBalance[] = []
+  const contractEarningsInternalBalancesToSave: ContractEarningsInternalBalance[] =
+    []
+
+  // Handle distributor fee
+  const distributorFee = split.distributorFee
+  let remainingAmount = amount
+  if (distributorFee.notEqual(ZERO)) {
+    const distributorAmount = amount.times(distributorFee).div(PERCENTAGE_SCALE)
+    remainingAmount = amount.minus(distributorAmount)
 
     // if address is zero, dont give to any account (don't know msg.sender)
-    if (distributorAddress != Address.zero()) {
-      let distributorAddressString = distributorAddress.toHexString()
+    if (!distributorAddress.equals(Address.zero())) {
+      const distributorAddressString = distributorAddress.toHexString()
 
       // 'Create' the user in case they don't exist yet
       createUserIfMissing(distributorAddressString, blockNumber, timestamp)
 
-      addInternalBalance(
-        splitId,
+      // Create and collect entities but don't save yet
+      const accountTokenInternalBalanceId = createJointId([
+        TOKEN_INTERNAL_BALANCE_PREFIX,
         distributorAddressString,
         tokenId,
-        distributorAmount,
-        true,
+      ])
+      let accountTokenInternalBalance = TokenInternalBalance.load(
+        accountTokenInternalBalanceId,
       )
+      if (!accountTokenInternalBalance) {
+        accountTokenInternalBalance = new TokenInternalBalance(
+          accountTokenInternalBalanceId,
+        )
+        accountTokenInternalBalance.account = distributorAddressString
+        accountTokenInternalBalance.token = tokenId
+        accountTokenInternalBalance.amount = ZERO
+      }
+      accountTokenInternalBalance.amount =
+        accountTokenInternalBalance.amount.plus(distributorAmount)
+      internalBalancesToSave.push(accountTokenInternalBalance)
 
-      let distributeDistributionEventId = createJointId([
+      const distributeDistributionEventId = createJointId([
         DISTRIBUTE_PREFIX,
         distributionEventId,
         distributorAddressString,
       ])
-      let distributeDistributionEvent = new DistributeDistributionEvent(
+      const distributeDistributionEvent = new DistributeDistributionEvent(
         distributeDistributionEventId,
       )
       distributeDistributionEvent.timestamp = timestamp
       distributeDistributionEvent.account = distributorAddressString
-      distributeDistributionEvent.logIndex = logIdx
       distributeDistributionEvent.token = tokenId
       distributeDistributionEvent.amount = distributorAmount
+      distributeDistributionEvent.split = splitId
       distributeDistributionEvent.distributionEvent = distributionEventId
       distributeDistributionEvent.save()
     }
   }
 
-  let recipients = split.recipients
-  for (let i: i32 = 0; i < recipients.length; i++) {
-    let recipientId = recipients[i]
-    // must exist
-    let recipient = Recipient.load(recipientId) as Recipient
-    let ownership = recipient.ownership
-    let recipientAmount = (amount * ownership) / PERCENTAGE_SCALE
-    addInternalBalance(
-      splitId,
-      recipient.account,
-      tokenId,
-      recipientAmount,
-      false,
-    )
+  // Preload all recipients to avoid loading them one by one in the loop
+  const recipients = split.recipients
+  const recipientEntities: Map<string, Recipient> = new Map()
 
-    let receiveDistributionEventId = createJointId([
+  // Preload all recipient entities
+  for (let i = 0; i < recipients.length; i++) {
+    const recipientId = recipients[i]
+    const recipient = Recipient.load(recipientId)
+    if (recipient) {
+      recipientEntities.set(recipientId, recipient as Recipient)
+    }
+  }
+
+  // Process all recipients in batch
+  for (let i: i32 = 0; i < recipients.length; i++) {
+    const recipientId = recipients[i]
+    // Use preloaded recipient
+    const recipient = recipientEntities.get(recipientId)
+    if (!recipient) continue // Skip if recipient not found
+
+    const ownership = recipient.ownership
+    const recipientAmount = remainingAmount
+      .times(ownership)
+      .div(PERCENTAGE_SCALE)
+
+    // Create internal balance entity
+    const accountId = recipient.account
+    const accountTokenInternalBalanceId = createJointId([
+      TOKEN_INTERNAL_BALANCE_PREFIX,
+      accountId,
+      tokenId,
+    ])
+    let accountTokenInternalBalance = TokenInternalBalance.load(
+      accountTokenInternalBalanceId,
+    )
+    if (!accountTokenInternalBalance) {
+      accountTokenInternalBalance = new TokenInternalBalance(
+        accountTokenInternalBalanceId,
+      )
+      accountTokenInternalBalance.account = accountId
+      accountTokenInternalBalance.token = tokenId
+      accountTokenInternalBalance.amount = ZERO
+    }
+    accountTokenInternalBalance.amount =
+      accountTokenInternalBalance.amount.plus(recipientAmount)
+    internalBalancesToSave.push(accountTokenInternalBalance)
+
+    // Create contract earnings internal balance
+    const contractEarningsId = saveContractEarnings(splitId, accountId).id
+    const contractEarningsInternalBalanceId = createJointId([
+      CONTRACT_EARNINGS_INTERNAL_BALANCE_PREFIX,
+      contractEarningsId,
+      tokenId,
+    ])
+    let contractEarningsInternalBalance = ContractEarningsInternalBalance.load(
+      contractEarningsInternalBalanceId,
+    )
+    if (!contractEarningsInternalBalance) {
+      contractEarningsInternalBalance = new ContractEarningsInternalBalance(
+        contractEarningsInternalBalanceId,
+      )
+      contractEarningsInternalBalance.contractEarnings = contractEarningsId
+      contractEarningsInternalBalance.token = tokenId
+      contractEarningsInternalBalance.amount = ZERO
+    }
+    contractEarningsInternalBalance.amount =
+      contractEarningsInternalBalance.amount.plus(recipientAmount)
+    contractEarningsInternalBalancesToSave.push(contractEarningsInternalBalance)
+
+    // Create distribution event
+    const receiveDistributionEventId = createJointId([
       RECEIVE_PREFIX,
       distributionEventId,
       recipient.account,
     ])
-    let receiveDistributionEvent = new ReceiveDistributionEvent(
+    const receiveDistributionEvent = new ReceiveDistributionEvent(
       receiveDistributionEventId,
     )
     receiveDistributionEvent.timestamp = timestamp
     receiveDistributionEvent.account = recipient.account
-    receiveDistributionEvent.logIndex = logIdx
     receiveDistributionEvent.token = tokenId
     receiveDistributionEvent.amount = recipientAmount
+    receiveDistributionEvent.split = splitId
     receiveDistributionEvent.distributionEvent = distributionEventId
-    receiveDistributionEvent.save()
+    receiveEvents.push(receiveDistributionEvent)
+  }
+
+  // Save all entities in batches
+  for (let i = 0; i < internalBalancesToSave.length; i++) {
+    internalBalancesToSave[i].save()
+  }
+
+  for (let i = 0; i < contractEarningsInternalBalancesToSave.length; i++) {
+    contractEarningsInternalBalancesToSave[i].save()
+  }
+
+  for (let i = 0; i < receiveEvents.length; i++) {
+    receiveEvents[i].save()
   }
 }
 
@@ -464,7 +553,7 @@ export function saveControlTransferEvents(
   fromUserControlTransferEvent.controlTransferEvent = controlTransferEventId
   fromUserControlTransferEvent.save()
 
-  if (toUserId != Address.zero().toHexString()) {
+  if (toUserId !== Address.zero().toHexString()) {
     let toUserControlTransferEventId = createJointId([
       TO_USER_PREFIX,
       controlTransferEventId,
@@ -553,12 +642,12 @@ export function updateWithdrawalAmount(
       tokenWithdrawal.token = tokenId
       tokenWithdrawal.amount = ZERO
     }
-    tokenWithdrawal.amount += amount
+    tokenWithdrawal.amount = tokenWithdrawal.amount.plus(amount)
     tokenWithdrawal.save()
   }
 
   // Modify ContractEarnings
-  if (contractId && contractId != accountId) {
+  if (contractId && contractId !== accountId) {
     // Funds were pushed directly to the recipient, did not go through split main
     let contractEarningsId = saveContractEarnings(contractId, accountId).id
     let contractEarningsWithdrawalId = createJointId([
@@ -577,11 +666,12 @@ export function updateWithdrawalAmount(
       contractEarningsWithdrawal.token = tokenId
       contractEarningsWithdrawal.amount = ZERO
     }
-    contractEarningsWithdrawal.amount += amount
+    contractEarningsWithdrawal.amount =
+      contractEarningsWithdrawal.amount.plus(amount)
     contractEarningsWithdrawal.save()
-  } else if (contractId == accountId || !contractId) {
+  } else if (contractId === accountId || !contractId) {
     // Funds were pushed throughs split main
-    // contractId == accountId => split distribution, !contractId => split main withdrawal
+    // contractId === accountId => split distribution, !contractId => split main withdrawal
     // Move contract earnings internal balances over to contract earnings withdrawals
     let contractEarningsArray = getContractEarnings(accountId)
     for (let i = 0; i < contractEarningsArray.length; i++) {
@@ -591,11 +681,10 @@ export function updateWithdrawalAmount(
         contractEarnings.id,
         tokenId,
       ])
-      let contractEarningsInternalBalance = ContractEarningsInternalBalance.load(
-        contractEarningsInternalBalanceId,
-      )
+      let contractEarningsInternalBalance =
+        ContractEarningsInternalBalance.load(contractEarningsInternalBalanceId)
       if (contractEarningsInternalBalance) {
-        if (contractEarningsInternalBalance.amount > ZERO) {
+        if (contractEarningsInternalBalance.amount.gt(ZERO)) {
           let contractEarningsWithdrawalId = createJointId([
             CONTRACT_EARINGS_WITHDRAWAL_PREFIX,
             contractEarnings.id,
@@ -612,8 +701,10 @@ export function updateWithdrawalAmount(
             contractEarningsWithdrawal.token = tokenId
             contractEarningsWithdrawal.amount = ZERO
           }
-          contractEarningsWithdrawal.amount +=
-            contractEarningsInternalBalance.amount
+          contractEarningsWithdrawal.amount =
+            contractEarningsWithdrawal.amount.plus(
+              contractEarningsInternalBalance.amount,
+            )
           contractEarningsWithdrawal.save()
 
           contractEarningsInternalBalance.amount = ZERO
@@ -642,7 +733,7 @@ export function updateDistributionAmount(
     tokenDistribution.token = tokenId
     tokenDistribution.amount = ZERO
   }
-  tokenDistribution.amount += amount
+  tokenDistribution.amount = tokenDistribution.amount.plus(amount)
   tokenDistribution.save()
 }
 
@@ -652,7 +743,14 @@ export function createUserIfMissing(
   blockNumber: i32,
   timestamp: BigInt,
 ): void {
-  // only create a User if accountId doesn't point to another module
+  // First check if user already exists before checking other entity types
+  let user = User.load(accountId)
+  if (user) return
+
+  // Check if accountId points to a Chaos Liquid Split
+  if (accountId === CHAOS_LIQUID_SPLIT) return
+
+  // Check if accountId points to another module (using a single load for each entity type)
   let split = Split.load(accountId)
   if (split) return
 
@@ -671,43 +769,76 @@ export function createUserIfMissing(
   let passThroughWallet = PassThroughWallet.load(accountId)
   if (passThroughWallet) return
 
-  // Don't allow this for the chaos liquid split. The liquid split is the controller
-  // of the payout split, but there's no event to create the liquid split before the
-  // payout split. We can't create the user first because that blocks us from creating
-  // the liquid split.
-  if (accountId == CHAOS_LIQUID_SPLIT) return
-
-  let user = new User(accountId)
-  user.type = 'user'
+  // Create the user if it doesn't exist and isn't another module
+  user = new User(accountId)
   user.createdBlock = blockNumber
-  user.latestBlock = blockNumber
-  user.latestActivity = timestamp
+  user.createdTimestamp = timestamp
   user.save()
 }
 
+// Local cache for contract earnings to avoid redundant loads
+const contractEarningsCache = new Map<string, ContractEarnings[]>()
+
 function getContractEarnings(accountId: string): ContractEarnings[] {
+  // Check if we have already loaded this account's contract earnings
+  if (contractEarningsCache.has(accountId)) {
+    return contractEarningsCache.get(accountId) as ContractEarnings[]
+  }
+
+  let result: ContractEarnings[] = []
+
   const user = getUser(accountId)
-  if (user) return user.contractEarnings.load()
+  if (user) {
+    result = user.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
   const split = getSplit(accountId, false)
-  if (split) return split.contractEarnings.load()
+  if (split) {
+    result = split.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
   const waterfall = getWaterfallModule(accountId, false)
-  if (waterfall) return waterfall.contractEarnings.load()
+  if (waterfall) {
+    result = waterfall.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
   const vesting = getVestingModule(accountId, false)
-  if (vesting) return vesting.contractEarnings.load()
+  if (vesting) {
+    result = vesting.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
   const liquidSplit = getLiquidSplit(accountId, false)
-  if (liquidSplit) return liquidSplit.contractEarnings.load()
+  if (liquidSplit) {
+    result = liquidSplit.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
   const swapper = getSwapper(accountId, false)
-  if (swapper) return swapper.contractEarnings.load()
+  if (swapper) {
+    result = swapper.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
   const passThroughWallet = getPassThroughWallet(accountId, false)
-  if (passThroughWallet) return passThroughWallet.contractEarnings.load()
+  if (passThroughWallet) {
+    result = passThroughWallet.contractEarnings.load()
+    contractEarningsCache.set(accountId, result)
+    return result
+  }
 
-  throw new Error('Contract earnings must exist')
+  // If nothing found, store empty array in cache to avoid redundant lookups
+  contractEarningsCache.set(accountId, [])
+  return []
 }
 
 export function getSplit(
