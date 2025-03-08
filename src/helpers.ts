@@ -768,7 +768,10 @@ export function createUserIfMissing(
 
   // Create the user if it doesn't exist and isn't another module
   user = new User(accountId)
+  user.type = 'user' // Make sure to set the required type field
   user.createdBlock = blockNumber
+  user.latestBlock = blockNumber // Set the required latestBlock field
+  // Removed createdTimestamp as it doesn't exist on User
   user.save()
 }
 
