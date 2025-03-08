@@ -372,6 +372,7 @@ export function distributeSplit(
       )
       distributeDistributionEvent.timestamp = timestamp
       distributeDistributionEvent.account = distributorAddressString
+      distributeDistributionEvent.logIndex = logIdx
       distributeDistributionEvent.token = tokenId
       distributeDistributionEvent.amount = distributorAmount
       distributeDistributionEvent.distributionEvent = distributionEventId
@@ -459,6 +460,7 @@ export function distributeSplit(
     )
     receiveDistributionEvent.timestamp = timestamp
     receiveDistributionEvent.account = recipient.account
+    receiveDistributionEvent.logIndex = logIdx
     receiveDistributionEvent.token = tokenId
     receiveDistributionEvent.amount = recipientAmount
     receiveDistributionEvent.distributionEvent = distributionEventId
@@ -771,6 +773,7 @@ export function createUserIfMissing(
   user.type = 'user' // Make sure to set the required type field
   user.createdBlock = blockNumber
   user.latestBlock = blockNumber // Set the required latestBlock field
+  user.latestActivity = timestamp // Set the required latestActivity field
   // Removed createdTimestamp as it doesn't exist on User
   user.save()
 }
